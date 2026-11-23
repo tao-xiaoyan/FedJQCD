@@ -52,7 +52,7 @@ From the repository root, inspect the FedJQCD options or run a one-round Shakesp
 
 ```sh
 python FedJQCD.py --help
-python FedJQCD.py --dataset Shakespeare --num-clients 2 --rounds 1 --local-epochs 1 --seeds 0 --use-quant --quant-bits 4 --use-ef
+python FedJQCD.py --dataset Shakespeare --num-clients 2 --rounds 1 --local-epochs 1 --seeds 0 --use-quant --quant-bits 4 --use-ef  --quant-control-bits 4 --ef-control 
 ```
 
 From the repository root, enter `system/` to run the baseline example. It uses CPU, bundled MNIST shards, and disabled SwanLab tracking.

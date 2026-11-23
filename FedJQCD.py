@@ -885,26 +885,22 @@ def main():
         if args.ef_control:
             name += "_CtrlEF"
     
-    if args.dataset != "Shakespeare":
-        swanlab.init(
-            project=args.swanlab_project or "FedJQCD_CIFAR-10_8C",
-            experiment_name=name,
-            config=vars(args),
-            description="量化 + Error Feedback 实验，支持控制变量量化",
-        )
-    print(f"\n=== 运行实验配置: {name} ===")
 
+    print(f"\n=== 运行实验配置: {name} ===")
     results = {}
     seed_logs = []
+
     for seed in args.seeds:
         exp_name = f"{name}_seed{seed}"
+
         swanlab.init(
             project=args.swanlab_project or "Federated_Learning",
             experiment_name=exp_name,
             config=vars(args),
             description=f"seed={seed}",
-            reinit=True if args.dataset == "Shakespeare" else None
         )
+       
+
         logs = run_experiment(
             True, args.use_quant, args.use_ef, seed,
             ef_variant=args.ef_variant,
