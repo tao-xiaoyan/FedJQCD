@@ -13,6 +13,13 @@ import swanlab
 import json
 from collections import Counter
 import time
+import sys
+from pathlib import Path
+
+# Share the framework's model and client-data implementations.
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'system'))
+from flcore.trainmodel.models import LSTMNet
+from utils.data_utils import read_client_data
 
 
 # ======================
@@ -305,6 +312,8 @@ class Client:
                     loss = loss_fn(out, y)
                 else:
                     raise ValueError(f"Unexpected output dimension: {out.dim()}")
+                if not torch.isfinite(loss).item():
+                    raise FloatingPointError("FedJQCD local training loss is non-finite")
                 loss.backward()
                 with torch.no_grad():
                     idx = 0
@@ -508,7 +517,8 @@ def run_experiment(use_cv, use_quant, use_ef, seed,
                    quant_control=False, ef_control=False, quant_control_bits=8,
                    quant_control_group_size=-1,
                    early_stop_patience=None, early_stop_min_delta=0.001,
-                   download_quant_bits=None, download_group_size=-1, download_scale_bits=16):
+                   download_quant_bits=None, download_group_size=-1, download_scale_bits=16,
+                   feature_dim=512, vocab_size=80):
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -519,7 +529,14 @@ def run_experiment(use_cv, use_quant, use_ef, seed,
     global NUM_CLIENTS, ROUNDS, BATCH_SIZE, ETA_LOCAL, ETA_GLOBAL, C, NONIID, NONIID_ALPHA, FULL_PREC_BITS
 
     # --- 数据集加载（与原代码相同）---
-    if dataset == "CIFAR10":
+    if dataset == "Shakespeare":
+        clients_data = [read_client_data(dataset, i, is_train=True) for i in range(NUM_CLIENTS)]
+        test_data = [read_client_data(dataset, i, is_train=False) for i in range(NUM_CLIENTS)]
+        test_loader = torch.utils.data.DataLoader(
+            torch.utils.data.ConcatDataset(test_data), batch_size=128, shuffle=False)
+        model = LSTMNet(hidden_dim=feature_dim, vocab_size=vocab_size, num_classes=80)
+        class_weights = None
+    elif dataset == "CIFAR10":
         train_transform = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
@@ -631,9 +648,8 @@ def run_experiment(use_cv, use_quant, use_ef, seed,
 
     download_bits_per_client = download_model_bits + download_control_bits
 
-    # --- 早停参数初始化 ---
-    if early_stop_patience is None or early_stop_patience <= 0:
-        early_stop_patience = float('inf')  # 不早停
+    # Legacy early-stop arguments remain accepted for existing experiment commands.
+    # Convergence-based stopping is disabled; exceptions still propagate.
 
     # --- 日志初始化 ---
     logs = {
@@ -660,11 +676,6 @@ def run_experiment(use_cv, use_quant, use_ef, seed,
     else:
         target_acc = 0.95
     comm_to_target = None
-
-    # 早停状态
-    best_acc = 0.0
-    best_round = 0
-    no_improve_rounds = 0
 
     # --- 联邦学习主循环 ---
     for r in range(ROUNDS):
@@ -711,14 +722,20 @@ def run_experiment(use_cv, use_quant, use_ef, seed,
 
         # 服务器聚合
         delta_mean = torch.stack(deltas).mean(dim=0)
+        if not torch.isfinite(delta_mean).all().item():
+            raise FloatingPointError(f"FedJQCD round {r}: non-finite model update")
         server.step(delta_mean)
         if use_cv and c_deltas:
             sampling_ratio = len(selected_clients) / NUM_CLIENTS
             delta_c_mean = torch.stack(c_deltas).mean(dim=0)
+            if not torch.isfinite(delta_c_mean).all().item():
+                raise FloatingPointError(f"FedJQCD round {r}: non-finite control update")
             server.c_global += sampling_ratio * delta_c_mean
 
         # 测试
         acc, test_loss = test(server.model, test_loader)
+        if not np.isfinite(acc) or not np.isfinite(test_loss):
+            raise FloatingPointError(f"FedJQCD round {r}: non-finite evaluation metric")
 
         # 计算指标
         avg_quant_err = sum(quant_errors) / len(quant_errors) if quant_errors else 0.0
@@ -747,14 +764,6 @@ def run_experiment(use_cv, use_quant, use_ef, seed,
             logs["server_c_norm"].append(0.0)
         logs["comm_cost"].append(cumulative_comm)
         logs["comm_time"].append(cumulative_time)
-
-        # 早停判断
-        if acc > best_acc + early_stop_min_delta:
-            best_acc = acc
-            best_round = r
-            no_improve_rounds = 0
-        else:
-            no_improve_rounds += 1
 
         # 目标精度通信量记录
         if comm_to_target is None and acc >= target_acc:
@@ -786,11 +795,6 @@ def run_experiment(use_cv, use_quant, use_ef, seed,
             "total_comm_MB": cumulative_comm / 8e6,
             "upload_comm_MB": cumulative_upload / 8e6,
         }, step=r)
-
-        # 早停退出
-        if no_improve_rounds >= early_stop_patience:
-            print(f"Early stop triggered at round {r}. Best acc {best_acc:.4f} at round {best_round}")
-            break
 
     if comm_to_target is None:
         comm_to_target = cumulative_comm
@@ -838,7 +842,10 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="*", default=[0])
     parser.add_argument("--save-dir", type=str, default=SAVE_DIR)
     parser.add_argument("--latency", type=float, default=0.0)
-    parser.add_argument("--dataset", type=str, default="MNIST", choices=["MNIST", "CIFAR10"])
+    parser.add_argument("--dataset", type=str, default="MNIST", choices=["MNIST", "CIFAR10", "Shakespeare"])
+    parser.add_argument("--feature-dim", type=int, default=512, help="LSTM hidden/embedding size; match main.py -fd")
+    parser.add_argument("--vocab-size", type=int, default=80, choices=[80], help="Shakespeare character vocabulary")
+    parser.add_argument("--swanlab-project", type=str, default=None)
     parser.add_argument("--quant-type", type=str, default="uniform", choices=["uniform", "unbiased"])
     parser.add_argument("--group-size", type=int, default=-1)
     parser.add_argument("--scale-bits", type=int, default=16)
@@ -850,8 +857,8 @@ def main():
     parser.add_argument("--download-scale-bits", type=int, default=16,
                         help="下发量化时缩放因子的量化位数（用于通信量计算）")
     
-    parser.add_argument("--early-stop-patience", type=int, default=10, help="早停耐心值")
-    parser.add_argument("--early-stop-min-delta", type=float, default=0.001, help="最小改善阈值")
+    parser.add_argument("--early-stop-patience", type=int, default=0, help="兼容旧命令；收敛性早停已关闭，此参数不再生效")
+    parser.add_argument("--early-stop-min-delta", type=float, default=0.001, help="兼容旧命令；收敛性早停已关闭，此参数不再生效")
     
     args = parser.parse_args()
     
@@ -868,7 +875,7 @@ def main():
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     # 构造实验名称
-    name = "FedAvg"    
+    name = "FedJQCD" if args.dataset == "Shakespeare" else "FedAvg"
     if args.use_quant:
         name += f"_Q{args.quant_bits}"
     if args.use_ef:
@@ -878,12 +885,13 @@ def main():
         if args.ef_control:
             name += "_CtrlEF"
     
-    swanlab.init(
-        project="FedJQCD_CIFAR-10_8C",
-        experiment_name=name,
-        config=vars(args),
-        description="量化 + Error Feedback 实验，支持控制变量量化",
-    )
+    if args.dataset != "Shakespeare":
+        swanlab.init(
+            project=args.swanlab_project or "FedJQCD_CIFAR-10_8C",
+            experiment_name=name,
+            config=vars(args),
+            description="量化 + Error Feedback 实验，支持控制变量量化",
+        )
     print(f"\n=== 运行实验配置: {name} ===")
 
     results = {}
@@ -891,10 +899,11 @@ def main():
     for seed in args.seeds:
         exp_name = f"{name}_seed{seed}"
         swanlab.init(
-            project="Federated_Learning",
+            project=args.swanlab_project or "Federated_Learning",
             experiment_name=exp_name,
             config=vars(args),
-            description=f"seed={seed}"
+            description=f"seed={seed}",
+            reinit=True if args.dataset == "Shakespeare" else None
         )
         logs = run_experiment(
             True, args.use_quant, args.use_ef, seed,
@@ -915,13 +924,17 @@ def main():
             quant_control_bits=args.quant_control_bits,
             quant_control_group_size=args.quant_control_group_size,
             early_stop_patience=args.early_stop_patience,
-            early_stop_min_delta=args.early_stop_min_delta
+            early_stop_min_delta=args.early_stop_min_delta,
+            feature_dim=args.feature_dim,
+            vocab_size=args.vocab_size
         )
         seed_logs.append(logs)
 
     results[name] = seed_logs
     torch.save(results, os.path.join(SAVE_DIR, f"{name}_results.pt"))
     plot_all(results)
+    if args.dataset == "Shakespeare":
+        swanlab.finish()
     print(f"\n实验 {name} 完成！图表已保存至 {SAVE_DIR}")
 
 if __name__ == "__main__":

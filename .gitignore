@@ -1,3 +1,8 @@
 /results
 /system/models
 *__pycache__*
+
+# FedJQCD additions for default plots and downloaded image data
+/figures/
+/data/
+/dataset/Cifar10/rawdata/
