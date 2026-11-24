@@ -74,9 +74,6 @@ For MNIST and CIFAR-10, the two entry points use different data preparation and 
 - **FedJQCD.** The runtime output directory defaults to `figures/` and can be set with `--save-dir`. The runner saves per-seed metric histories as `*_results.pt` and writes PNG plots. SwanLab also receives per-round metrics, including cumulative upload and total communication estimates.
 - **Baselines.** When launched from `system/`, the runner writes HDF5 histories under the runtime directory `results/` at the repository root and saves server models under `system/models/`. SwanLab tracking defaults to online mode and can be disabled with `--swanlab_mode disabled`.
 
-## Acknowledgements
-
-This repository is adapted from [PFLlib](https://github.com/TsingZ0/PFLlib). The comparison framework and shared client-data and model components build on the upstream project. This README was rewritten for FedJQCD. The repository adds the standalone FedJQCD runner and adapts the baseline entry point and experiment logging for the comparisons described here. For the upstream framework, see the [PFLlib paper in JMLR](https://www.jmlr.org/papers/v26/23-1634.html).
 
 ## License
 
